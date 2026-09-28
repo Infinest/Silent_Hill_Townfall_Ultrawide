@@ -5,9 +5,11 @@
 // pillarboxes the view rect when the camera's aspect-ratio constraint binds
 // (bConstrainAspectRatio, e.g. the 21:9 gameplay clamp).
 //
-// This DLL is dropped into Townfall\Binaries\Win64 as dxgi.dll (Windows loads
-// it for the D3D12 renderer) and installs two hooks (hooks.cpp): the view rect
-// is handed through unchanged for normal cameras (full 32:9 viewport), and the
+// This DLL is dropped into Townfall\Binaries\Win64 as a proxy for a system
+// DLL the game imports statically (dxgi.dll by default; build.bat accepts
+// another target, e.g. build.bat winmm) and installs two hooks (hooks.cpp):
+// the view rect is handed through unchanged for normal cameras (full 32:9
+// viewport), and the
 // projection matrix is built from the real view rect aspect instead of the
 // camera's authored aspect property (which would stretch the image).
 //
@@ -27,33 +29,8 @@
 #include <cstring>
 
 #include "log.h"
+#include "proxy.h"
 
-// First-chance logger for fatal exceptions: records code + RIP (module
-// offset) so crashes in the game can be mapped to the exact instruction
-// without needing a debugger, then lets normal handling continue.
-static LONG WINAPI VectoredExceptionLogger(EXCEPTION_POINTERS* ep) {
-    const DWORD code = ep->ExceptionRecord->ExceptionCode;
-    if (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_INT_DIVIDE_BY_ZERO ||
-        code == EXCEPTION_ILLEGAL_INSTRUCTION || code == EXCEPTION_STACK_OVERFLOW) {
-        HMODULE game = GetModuleHandleW(nullptr);
-        uintptr_t base = reinterpret_cast<uintptr_t>(game);
-        uintptr_t rip = ep->ContextRecord->Rip;
-        HMODULE mod = nullptr;
-        char modName[64] = "?";
-        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                               reinterpret_cast<LPCSTR>(rip), &mod)) {
-            GetModuleFileNameA(mod, modName, sizeof(modName));
-            const char* slash = strrchr(modName, '\\');
-            if (slash) memmove(modName, slash + 1, strlen(slash));
-        }
-        LogLine("CRASH code=%X rip=%llX mod=%s modoff=%llX addr=%llX", code,
-                (unsigned long long)rip, modName,
-                (unsigned long long)(rip - reinterpret_cast<uintptr_t>(mod)),
-                (unsigned long long)(uintptr_t)ep->ExceptionRecord->ExceptionInformation[1]);
-    }
-    return EXCEPTION_CONTINUE_SEARCH;
-}
 
 void InstallCameraHooks(HMODULE game);
 void InstallUIConstraint(HMODULE game);
@@ -150,8 +127,7 @@ static DWORD WINAPI InitThread(LPVOID) {
 BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hinst);
-        // crash logger disabled: first-chance handler I/O can interfere with the game's own SEH-based probes
-        LogLine("dxgi proxy attached (pid %lu)", GetCurrentProcessId());
+        LogLine("%s proxy attached (pid %lu)", PROXY_TARGET_DLL, GetCurrentProcessId());
         EnsureDefaultIni();
         HANDLE h = CreateThread(nullptr, 0, InitThread, nullptr, 0, nullptr);
         if (h) CloseHandle(h);

@@ -77,6 +77,44 @@ The DLL is a proxy for the system `dxgi.dll` (so the game loads it
 automatically); all DXGI calls are forwarded to the real system library,
 loaded by full system path.
 
+### Alternative proxy targets
+
+`build.bat [target]` compiles the mod as a proxy for another system DLL and
+generates the export stubs automatically from the real DLL's export table
+(`tools\gen_proxy.py`). The proxy's export table is a full mirror of the
+original (names, ordinals, ordinal-only exports), so the game cannot tell the
+difference. Only use one proxy DLL at a time.
+
+Tested targets (game exe `Townfall-Win64-Shipping.exe`, Win11 24H2) - the game
+imports all of these, so each one is loaded from the game directory when used
+as the proxy name:
+
+| Target        | Loaded by game | Status                          |
+|---------------|----------------|---------------------------------|
+| `dxgi`        | static         | OK (default)                    |
+| `winmm`       | static         | OK (180 named + 1 ordinal)      |
+| `dsound`      | static         | OK                              |
+| `dwmapi`      | static         | OK (44 named + 75 ordinal-only) |
+| `bcrypt`      | static         | OK                              |
+| `winhttp`     | static         | OK                              |
+| `opengl32`    | static         | OK (368 exports)                |
+| `d3d11`       | delay-load     | OK (hooks install on first use) |
+| `d3d12`       | delay-load     | OK (hooks install on first use) |
+| `xinput1_4`   | delay-load     | OK (8 named + 101 ordinal-only) |
+| `mfreadwrite` | delay-load     | OK                              |
+
+Not supported: `uxtheme`, `dbghelp`, `mf`, `shlwapi`, `crypt32`, `imm32`,
+`gdi32`, `setupapi`, `shell32`, `ole32`, `oleaut32`, `ws2_32`, `advapi32`,
+`version` - their exports are forwarded to other DLLs, which the generator
+rejects because `GetProcAddress` is not guaranteed to resolve a forwarder.
+`kernel32`/`user32`/`gdi32` additionally are KnownDLLs (Windows always loads
+the system copy, an app-directory proxy is ignored).
+
+A target only works if the game imports it (statically or delay-loaded) -
+e.g. `dinput8` and `version` build fine but the game never loads them, so
+they are useless as proxies. To check a new target: `build.bat <name>`; the
+generator either emits stubs or explains why the DLL cannot be proxied.
+
 ## Config (optional)
 
 `TownfallUltraWide.ini` next to the DLL (delete it to reset to defaults):
@@ -119,7 +157,9 @@ Enabled=0
 ## Project layout
 
 ```
-build.bat            - MSVC build script -> dist\dxgi.dll
+build.bat            - MSVC build script -> dist\dxgi.dll (build.bat <target>
+                       builds a proxy for another system DLL, e.g. winmm)
+build_all.bat        - builds all tested proxy targets into dist\
 src/
   dllmain.cpp        - entry point, default-ini generation, config, init thread
   hooks.cpp          - camera hooks: conditional view-rect pass-through,
@@ -127,8 +167,12 @@ src/
   uiconstraint.cpp   - HUD box: SOverlay arrange-hook + gameplay state gate
   detour.cpp/.h      - absolute-jump detour helper (r11-preserving trampolines)
   log.cpp/.h         - lock-free WriteFile logger (opt-in via [Log] Enabled)
-  dxgi_exports.cpp   - proxy exports forwarded to system dxgi.dll
+  proxy.cpp/.h       - proxy core: real-DLL loader, resolve + trace helpers,
+                       PROXY_STUB / PROXY_ORDINAL_STUB macros
 tools/               - reversing + test toolchain
+  gen_proxy.py       - generates the export stubs/.def for the proxy target
+                       from the real system DLL's export table
+  verify_exports.py  - compares a built proxy's export table with the real DLL
   resolve/dump_all/layout  - DbgHelp symbol tools (uses the shipped PDB)
   disasm/annotate/find_*   - capstone disassembly + xref scanners
   steam_boot_test.py       - Steam launch + window/brightness boot tester
